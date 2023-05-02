@@ -58,7 +58,7 @@ function proxyWebSockets (source, target, onConnectVerify) {
       if (onConnectVerify) {
         const message = JSON.parse(data, binary);
         if (message && message.type === 'connection_init') {
-          const payload = onConnect(message.payload);
+          const payload = onConnectVerify(message.payload);
           if (payload) {
             message.payload = payload;
             target.send(JSON.stringify(message));
