@@ -43,13 +43,50 @@ function isExternalUrl (url) {
 
 function noop () {}
 
-function proxyWebSockets (source, target) {
+function proxyWebSockets (source, target, onConnectVerify) {
   function close (code, reason) {
     closeWebSocket(source, code, reason)
     closeWebSocket(target, code, reason)
   }
 
-  source.on('message', (data, binary) => waitConnection(target, () => target.send(data, { binary })))
+  let connections = []
+  source.addEventListener('message', (event) => {
+    const connection = event.target;
+    const data = event.data;
+    const binary = typeof event.data !== 'string';
+    waitConnection(target, () => {
+      if (onConnectVerify) {
+        const message = JSON.parse(data, binary);
+        if (message && message.type === 'connection_init') {
+          const payload = onConnect(message.payload);
+          if (payload) {
+            message.payload = payload;
+            target.send(JSON.stringify(message));
+          } else {
+            connections.push(connection);
+            source.send(
+              JSON.stringify({
+                type: 'connection_ack',
+              }),
+            );
+          }
+        } else if (message && message.type === 'subscribe') {
+          const idx = connections.indexOf(connection);
+          if (idx > -1) {
+            source.send(
+              JSON.stringify({
+                type: 'error',
+                id: message.id,
+                payload: [{ message: 'Unauthorized' }],
+              }),
+            );
+            connections.splice(idx, 1);
+          } else target.send(data, { binary });
+        }
+      }
+      target.send(data, { binary });
+    });
+  });
   /* istanbul ignore next */
   source.on('ping', data => waitConnection(target, () => target.ping(data)))
   /* istanbul ignore next */
@@ -74,8 +111,10 @@ function proxyWebSockets (source, target) {
 }
 
 class WebSocketProxy {
-  constructor (fastify, wsServerOptions) {
+  constructor (fastify, wsServerOptions, onConnectVerify) {
     this.logger = fastify.log
+
+    this.onConnectVerify = onConnectVerify
 
     const wss = new WebSocket.Server({
       noServer: true,
@@ -175,7 +214,7 @@ class WebSocketProxy {
 
     const target = new WebSocket(url, subprotocols, optionsWs)
     this.logger.debug({ url: url.href }, 'proxy websocket')
-    proxyWebSockets(source, target)
+    proxyWebSockets(source, target, this.onConnectVerify)
   }
 }
 
@@ -191,7 +230,7 @@ const httpWss = new WeakMap() // http.Server => WebSocketProxy
 function setupWebSocketProxy (fastify, options, rewritePrefix) {
   let wsProxy = httpWss.get(fastify.server)
   if (!wsProxy) {
-    wsProxy = new WebSocketProxy(fastify, options.wsServerOptions)
+    wsProxy = new WebSocketProxy(fastify, options.wsServerOptions, options.onConnectVerify)
     httpWss.set(fastify.server, wsProxy)
   }
 

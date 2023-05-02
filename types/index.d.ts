@@ -26,6 +26,7 @@ declare namespace fastifyHttpProxy {
     wsServerOptions?: ServerOptions;
     httpMethods?: string[];
     constraints?: { [name: string]: any };
+    onConnectVerify?: (payload: { [name: string]: any }) => { [name: string]: any } | boolean
   }
   
   export const fastifyHttpProxy: FastifyHttpProxy
