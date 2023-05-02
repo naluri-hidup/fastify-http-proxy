@@ -45,13 +45,50 @@ function isExternalUrl (url) {
 
 function noop () {}
 
-function proxyWebSockets (source, target) {
+function proxyWebSockets (source, target, onConnectVerify) {
   function close (code, reason) {
     closeWebSocket(source, code, reason)
     closeWebSocket(target, code, reason)
   }
 
-  source.on('message', (data, binary) => waitConnection(target, () => target.send(data, { binary })))
+  let connections = []
+  source.addEventListener('message', (event) => {
+    const connection = event.target;
+    const data = event.data;
+    const binary = typeof event.data !== 'string';
+    waitConnection(target, () => {
+      if (onConnectVerify) {
+        const message = JSON.parse(data, binary);
+        if (message && message.type === 'connection_init') {
+          const payload = onConnect(message.payload);
+          if (payload) {
+            message.payload = payload;
+            target.send(JSON.stringify(message));
+          } else {
+            connections.push(connection);
+            source.send(
+              JSON.stringify({
+                type: 'connection_ack',
+              }),
+            );
+          }
+        } else if (message && message.type === 'subscribe') {
+          const idx = connections.indexOf(connection);
+          if (idx > -1) {
+            source.send(
+              JSON.stringify({
+                type: 'error',
+                id: message.id,
+                payload: [{ message: 'Unauthorized' }],
+              }),
+            );
+            connections.splice(idx, 1);
+          } else target.send(data, { binary });
+        }
+      }
+      target.send(data, { binary });
+    });
+  });
   /* istanbul ignore next */
   source.on('ping', data => waitConnection(target, () => target.ping(data)))
   /* istanbul ignore next */
@@ -90,34 +127,51 @@ function handleUpgrade (fastify, rawRequest, socket, head) {
 }
 
 class WebSocketProxy {
-  constructor (fastify, { wsServerOptions, wsClientOptions, upstream, wsUpstream, replyOptions: { getUpstream } = {} }) {
-    this.logger = fastify.log
+  constructor(
+    fastify,
+    {
+      wsServerOptions,
+      wsClientOptions,
+      upstream,
+      wsUpstream,
+      replyOptions: { getUpstream } = {},
+      onConnectVerify,
+    }
+  ) {
+    this.logger = fastify.log;
     this.wsClientOptions = {
       rewriteRequestHeaders: defaultWsHeadersRewrite,
       headers: {},
-      ...wsClientOptions
-    }
-    this.upstream = convertUrlToWebSocket(upstream)
-    this.wsUpstream = wsUpstream ? convertUrlToWebSocket(wsUpstream) : ''
-    this.getUpstream = getUpstream
+      ...wsClientOptions,
+    };
+    this.upstream = convertUrlToWebSocket(upstream);
+    this.wsUpstream = wsUpstream ? convertUrlToWebSocket(wsUpstream) : "";
+    this.getUpstream = getUpstream;
+
+    this.onConnectVerify = onConnectVerify;
 
     const wss = new WebSocket.Server({
       noServer: true,
-      ...wsServerOptions
-    })
+      ...wsServerOptions,
+    });
 
     if (!fastify.server[kWsUpgradeListener]) {
       fastify.server[kWsUpgradeListener] = (rawRequest, socket, head) =>
-        handleUpgrade(fastify, rawRequest, socket, head)
-      fastify.server.on('upgrade', fastify.server[kWsUpgradeListener])
+        handleUpgrade(fastify, rawRequest, socket, head);
+      fastify.server.on("upgrade", fastify.server[kWsUpgradeListener]);
     }
 
     this.handleUpgrade = (request, dest, cb) => {
-      wss.handleUpgrade(request.raw, request.raw[kWs], request.raw[kWsHead], (socket) => {
-        this.handleConnection(socket, request, dest)
-        cb()
-      })
-    }
+      wss.handleUpgrade(
+        request.raw,
+        request.raw[kWs],
+        request.raw[kWsHead],
+        (socket) => {
+          this.handleConnection(socket, request, dest);
+          cb();
+        }
+      );
+    };
 
     // To be able to close the HTTP server,
     // all WebSocket clients need to be disconnected.
@@ -125,73 +179,78 @@ class WebSocketProxy {
     // add a hook before the server.close call. We need to resort
     // to monkeypatching for now.
     {
-      const oldClose = fastify.server.close
+      const oldClose = fastify.server.close;
       fastify.server.close = function (done) {
         wss.close(() => {
           oldClose.call(this, (err) => {
             /* istanbul ignore next */
-            done && done(err)
-          })
-        })
+            done && done(err);
+          });
+        });
         for (const client of wss.clients) {
-          client.close()
+          client.close();
         }
-      }
+      };
     }
 
     /* istanbul ignore next */
-    wss.on('error', (err) => {
+    wss.on("error", (err) => {
       /* istanbul ignore next */
-      this.logger.error(err)
-    })
+      this.logger.error(err);
+    });
 
-    this.wss = wss
-    this.prefixList = []
+    this.wss = wss;
+    this.prefixList = [];
   }
 
-  findUpstream (request, dest) {
-    const { search, pathname } = new URL(request.url, 'ws://127.0.0.1')
+  findUpstream(request, dest) {
+    const { search, pathname } = new URL(request.url, "ws://127.0.0.1");
 
-    if (typeof this.wsUpstream === 'string' && this.wsUpstream !== '') {
-      const target = new URL(this.wsUpstream)
-      target.search = search
-      target.pathname = target.pathname === '/' ? pathname : target.pathname
-      return target
+    if (typeof this.wsUpstream === "string" && this.wsUpstream !== "") {
+      const target = new URL(this.wsUpstream);
+      target.search = search;
+      target.pathname = target.pathname === "/" ? pathname : target.pathname;
+      return target;
     }
 
-    if (typeof this.upstream === 'string' && this.upstream !== '') {
-      const target = new URL(dest, this.upstream)
-      target.search = search
-      return target
+    if (typeof this.upstream === "string" && this.upstream !== "") {
+      const target = new URL(dest, this.upstream);
+      target.search = search;
+      return target;
     }
 
-    const upstream = this.getUpstream(request, '')
-    const target = new URL(dest, upstream)
+    const upstream = this.getUpstream(request, "");
+    const target = new URL(dest, upstream);
     /* istanbul ignore next */
-    target.protocol = upstream.indexOf('http:') === 0 ? 'ws:' : 'wss'
-    target.search = search
-    return target
+    target.protocol = upstream.indexOf("http:") === 0 ? "ws:" : "wss";
+    target.search = search;
+    return target;
   }
 
-  handleConnection (source, request, dest) {
-    const url = this.findUpstream(request, dest)
-    const queryString = getQueryString(url.search, request.url, this.wsClientOptions, request)
-    url.search = queryString
+  handleConnection(source, request, dest) {
+    const url = this.findUpstream(request, dest);
+    const queryString = getQueryString(
+      url.search,
+      request.url,
+      this.wsClientOptions,
+      request
+    );
+    url.search = queryString;
 
-    const rewriteRequestHeaders = this.wsClientOptions.rewriteRequestHeaders
-    const headersToRewrite = this.wsClientOptions.headers
+    const rewriteRequestHeaders = this.wsClientOptions.rewriteRequestHeaders;
+    const headersToRewrite = this.wsClientOptions.headers;
 
-    const subprotocols = []
+    const subprotocols = [];
     if (source.protocol) {
-      subprotocols.push(source.protocol)
+      subprotocols.push(source.protocol);
     }
 
-    const headers = rewriteRequestHeaders(headersToRewrite, request)
-    const optionsWs = { ...this.wsClientOptions, headers }
+    const headers = rewriteRequestHeaders(headersToRewrite, request);
+    const optionsWs = { ...this.wsClientOptions, headers };
 
-    const target = new WebSocket(url, subprotocols, optionsWs)
-    this.logger.debug({ url: url.href }, 'proxy websocket')
-    proxyWebSockets(source, target)
+    const target = new WebSocket(url, subprotocols, optionsWs);
+    this.logger.debug({ url: url.href }, "proxy websocket");
+    proxyWebSockets(source, target, this.onConnectVerify);
   }
 }
 

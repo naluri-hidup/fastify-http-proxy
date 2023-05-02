@@ -52,6 +52,7 @@ declare namespace fastifyHttpProxy {
     httpMethods?: string[];
     constraints?: { [name: string]: any };
     internalRewriteLocationHeader?: boolean;
+    onConnectVerify?: (payload: { [name: string]: any }) => { [name: string]: any } | boolean
   }
   
   export const fastifyHttpProxy: FastifyHttpProxy
