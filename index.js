@@ -59,7 +59,7 @@ function proxyWebSockets (source, target, onConnectVerify) {
             message.payload = payload;
             target.send(JSON.stringify(message));
           } else {
-            socket.reject = true;
+            source.reject = true;
             source.send(
               JSON.stringify({
                 type: 'connection_ack',
