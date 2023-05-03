@@ -50,23 +50,27 @@ function proxyWebSockets (source, target, onConnectVerify) {
   }
 
   source.on('message', (data, binary) => {
-    waitConnection(target, () => {
+    waitConnection(target, async () => {
       if (onConnectVerify) {
         const message = JSON.parse(data, binary);
         if (message && message.type === 'connection_init') {
-          const payload = onConnectVerify(message.payload);
+          const payload = await onConnectVerify(message.payload);
           if (payload) {
             message.payload = payload;
             target.send(JSON.stringify(message));
           } else {
-            connections.push(connection);
+            socket.reject = true;
             source.send(
               JSON.stringify({
                 type: 'connection_ack',
               }),
             );
           }
-        } else if (message && message.type === 'subscribe') {
+        } else if (
+          message &&
+          message.type === 'subscribe' &&
+          source.reject === true
+        ) {
           source.send(
             JSON.stringify({
               type: 'error',
@@ -74,9 +78,13 @@ function proxyWebSockets (source, target, onConnectVerify) {
               payload: [{ message: 'Unauthorized' }],
             }),
           );
+          source.reject = false;
+        } else {
+          target.send(data, { binary });
         }
+      } else {
+        target.send(data, { binary });
       }
-      target.send(data, { binary });
     });
   });
   /* istanbul ignore next */
