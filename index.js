@@ -51,11 +51,7 @@ function proxyWebSockets (source, target, onConnectVerify) {
     closeWebSocket(target, code, reason)
   }
 
-  let connections = []
-  source.addEventListener('message', (event) => {
-    const connection = event.target;
-    const data = event.data;
-    const binary = typeof event.data !== 'string';
+  source.on('message', (data, binary) => {
     waitConnection(target, () => {
       if (onConnectVerify) {
         const message = JSON.parse(data, binary);
@@ -73,17 +69,13 @@ function proxyWebSockets (source, target, onConnectVerify) {
             );
           }
         } else if (message && message.type === 'subscribe') {
-          const idx = connections.indexOf(connection);
-          if (idx > -1) {
-            source.send(
-              JSON.stringify({
-                type: 'error',
-                id: message.id,
-                payload: [{ message: 'Unauthorized' }],
-              }),
-            );
-            connections.splice(idx, 1);
-          } else target.send(data, { binary });
+          source.send(
+            JSON.stringify({
+              type: 'error',
+              id: message.id,
+              payload: [{ message: 'Unauthorized' }],
+            }),
+          );
         }
       }
       target.send(data, { binary });
