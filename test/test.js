@@ -5,7 +5,8 @@ const Fastify = require('fastify')
 const proxy = require('../')
 const got = require('got')
 const { Unauthorized } = require('http-errors')
-const Transform = require('stream').Transform
+const Transform = require('node:stream').Transform
+const qs = require('fast-querystring')
 
 async function run () {
   const origin = Fastify()
@@ -18,7 +19,7 @@ async function run () {
   })
 
   origin.get('/redirect', async (request, reply) => {
-    return reply.redirect(302, 'https://fastify.io')
+    return reply.redirect(302, 'https://fastify.dev')
   })
 
   origin.post('/this-has-data', async (request, reply) => {
@@ -29,12 +30,21 @@ async function run () {
     throw new Error('kaboom')
   })
 
+  origin.post('/redirect-to-relative-url', async (request, reply) => {
+    reply.header('location', '/relative-url')
+    return { status: 'ok' }
+  })
+
   origin.get('/api2/a', async (request, reply) => {
     return 'this is /api2/a'
   })
 
   origin.get('/variable-api/:id/endpoint', async (request, reply) => {
     return `this is "variable-api" endpoint with id ${request.params.id}`
+  })
+
+  origin.get('/variable-api/:id/endpoint-with-query', async (request, reply) => {
+    return `this is "variable-api" endpoint with id ${request.params.id} and query params ${JSON.stringify(request.query)}`
   })
 
   origin.get('/timeout', async (request, reply) => {
@@ -111,7 +121,7 @@ async function run () {
         followRedirect: false
       }
     )
-    t.equal(location, 'https://fastify.io')
+    t.equal(location, 'https://fastify.dev')
     t.equal(statusCode, 302)
   })
 
@@ -137,7 +147,7 @@ async function run () {
         followRedirect: false
       }
     )
-    t.equal(location, 'https://fastify.io')
+    t.equal(location, 'https://fastify.dev')
     t.equal(statusCode, 302)
   })
 
@@ -214,6 +224,62 @@ async function run () {
     const server = Fastify()
     server.register(proxy, {
       upstream: `http://localhost:${origin.server.address().port}`
+    })
+
+    await server.listen({ port: 0 })
+    t.teardown(server.close.bind(server))
+
+    const resultRoot = await got(
+      `http://localhost:${server.server.address().port}/this-has-data`,
+      {
+        method: 'POST',
+        json: { hello: 'world' },
+        responseType: 'json'
+      }
+    )
+    t.same(resultRoot.body, { something: 'posted' })
+  })
+
+  test('preValidation post payload contains invalid data', async t => {
+    const server = Fastify()
+    server.register(proxy, {
+      upstream: `http://localhost:${origin.server.address().port}`,
+      preValidation: async (request, reply) => {
+        if (request.body.hello !== 'world') {
+          reply.code(400).send({ message: 'invalid body.hello value' })
+        }
+      }
+    })
+
+    await server.listen({ port: 0 })
+    t.teardown(server.close.bind(server))
+
+    try {
+      await got(
+      `http://localhost:${server.server.address().port}/this-has-data`,
+      {
+        method: 'POST',
+        json: { hello: 'invalid' },
+        responseType: 'json'
+      }
+      )
+    } catch (err) {
+      t.equal(err.response.statusCode, 400)
+      t.same(err.response.body, { message: 'invalid body.hello value' })
+      return
+    }
+    t.fail()
+  })
+
+  test('preValidation post payload contains valid data', async t => {
+    const server = Fastify()
+    server.register(proxy, {
+      upstream: `http://localhost:${origin.server.address().port}`,
+      preValidation: async (request, reply) => {
+        if (request.body.hello !== 'world') {
+          reply.code(400).send({ message: 'invalid body.hello value' })
+        }
+      }
     })
 
     await server.listen({ port: 0 })
@@ -316,7 +382,7 @@ async function run () {
       upstream: `http://localhost:${origin.server.address().port}`,
       config: { foo: 'bar' },
       async preHandler (request, reply) {
-        t.same(reply.context.config, {
+        t.same(request.routeOptions.config, {
           foo: 'bar',
           url: '/',
           method: [
@@ -567,6 +633,32 @@ async function run () {
     t.equal(location, '/api/something')
   })
 
+  test('location headers is preserved when internalRewriteLocationHeader option is false', async t => {
+    const proxyServer = Fastify()
+
+    proxyServer.register(proxy, {
+      upstream: `http://localhost:${origin.server.address().port}`,
+      prefix: '/my-prefix',
+      internalRewriteLocationHeader: false
+    })
+
+    await proxyServer.listen({ port: 0 })
+
+    t.teardown(() => {
+      proxyServer.close()
+    })
+
+    const {
+      headers: { location }
+    } = await got(
+      `http://localhost:${proxyServer.server.address().port}/my-prefix/redirect-to-relative-url`,
+      {
+        method: 'POST'
+      }
+    )
+    t.equal(location, '/relative-url')
+  })
+
   test('passes onResponse option to reply.from() calls', async t => {
     const proxyServer = Fastify()
 
@@ -802,6 +894,28 @@ async function run () {
       `${proxyAddress}/second-service/foo?lang=en`
     )
     t.equal(resultFooRoute.body, 'Hello World (foo) - lang = en')
+  })
+
+  test('keep the query params on proxy', { only: true }, async t => {
+    const proxyServer = Fastify()
+
+    proxyServer.register(proxy, {
+      upstream: `http://localhost:${origin.server.address().port}`,
+      prefix: '/api/:id/endpoint',
+      rewritePrefix: '/variable-api/:id/endpoint-with-query'
+    })
+
+    await proxyServer.listen({ port: 0 })
+
+    t.teardown(() => {
+      proxyServer.close()
+    })
+
+    const firstProxyPrefix = await got(
+      `http://localhost:${proxyServer.server.address().port}/api/123/endpoint?foo=bar&foo=baz&abc=qux`
+    )
+    const queryParams = JSON.stringify(qs.parse('foo=bar&foo=baz&abc=qux'))
+    t.equal(firstProxyPrefix.body, `this is "variable-api" endpoint with id 123 and query params ${queryParams}`)
   })
 }
 

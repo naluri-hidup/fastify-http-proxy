@@ -5,9 +5,9 @@ const Fastify = require('fastify')
 const proxy = require('../')
 const ioServer = require('socket.io')
 const ioClient = require('socket.io-client')
-const { createServer } = require('http')
-const { promisify } = require('util')
-const { once } = require('events')
+const { createServer } = require('node:http')
+const { promisify } = require('node:util')
+const { once } = require('node:events')
 
 test('proxy socket.io', async t => {
   t.plan(2)
@@ -28,7 +28,7 @@ test('proxy socket.io', async t => {
     websocket: true
   })
 
-  await srvProxy.listen({ port: 0 })
+  await srvProxy.listen({ port: 0, host: '127.0.0.1' })
 
   srvSocket.on('connection', socket => {
     socket.on('hello', data => {
