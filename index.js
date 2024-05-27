@@ -266,8 +266,16 @@ function getQueryString (search, reqUrl, opts, request) {
   if (search.length > 0) {
     return search
   }
-
+  
   return ''
+}
+
+function setupWebSocketProxy (fastify, options, rewritePrefix) {
+  let wsProxy = httpWss.get(fastify.server)
+  if (!wsProxy) {
+    wsProxy = new WebSocketProxy(fastify, options.wsServerOptions, options.onConnectVerify)
+    httpWss.set(fastify.server, wsProxy)
+  }
 }
 
 function defaultWsHeadersRewrite (headers, request) {
